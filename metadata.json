@@ -1,0 +1,5 @@
+{
+  "name": "Cyber Security Toolkit",
+  "description": "A comprehensive web-based toolkit for generating secure passwords and tokens, analyzing password strength, and demonstrating secure hashing techniques, inspired by a Python security script.",
+  "requestFramePermissions": []
+}
