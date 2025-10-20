@@ -1,7 +1,8 @@
 import React, { useState, useCallback } from 'react';
 import { CopyIcon, CheckIcon } from './icons';
 
-const PasswordHistoryItem = ({ password }: { password: string }) => {
+// FIX: Explicitly type PasswordHistoryItem with React.FC to resolve issue with 'key' prop type checking.
+const PasswordHistoryItem: React.FC<{ password: string }> = ({ password }) => {
     const [copied, setCopied] = useState(false);
     const handleCopy = () => {
         navigator.clipboard.writeText(password);

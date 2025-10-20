@@ -1,4 +1,6 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { GoogleGenAI } from '@google/genai';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // Helper function to convert ArrayBuffer to hex string
 const bufferToHex = (buffer: ArrayBuffer): string => {
@@ -120,6 +122,9 @@ const md5 = (str: string): string => {
 
 
 type HashAlgorithm = 'MD5' | 'SHA-1' | 'SHA-256' | 'SHA-512';
+type AttackMode = 'dictionary' | 'bruteforce' | 'ai' | 'rulebased' | 'mask' | 'verification';
+const STORAGE_KEY = 'cyber-security-toolkit-cracker-state';
+
 
 const hashWord = async (word: string, algorithm: HashAlgorithm): Promise<string> => {
     if (algorithm === 'MD5') {
@@ -136,61 +141,119 @@ const hashWord = async (word: string, algorithm: HashAlgorithm): Promise<string>
     }
 };
 
-/**
- * An efficient, non-blocking generator that yields password combinations
- * for brute-force attacks.
- * @param {string} charset - The character set to use for combinations.
- * @param {number} maxLength - The maximum length of passwords to generate.
- */
-function* combinationGenerator(charset: string, maxLength: number) {
-    for (let len = 1; len <= maxLength; len++) {
-        const indices = new Array(len).fill(0);
-        while (true) {
-            let word = '';
-            for (const index of indices) {
-                word += charset[index];
-            }
-            yield {word, length: len};
+const formatSeconds = (seconds: number): string => {
+    if (!isFinite(seconds) || seconds < 0) return 'N/A';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+};
 
-            let i = len - 1;
-            while (i >= 0) {
-                indices[i]++;
-                if (indices[i] < charset.length) break;
-                indices[i] = 0;
-                i--;
+
+// GENERATORS
+function* combinationGenerator(charset: string, maxLength: number, resumeState?: { length: number; index: number }) {
+    const base = charset.length;
+    let startLen = resumeState ? resumeState.length : 1;
+
+    for (let len = startLen; len <= maxLength; len++) {
+        const totalForLen = Math.pow(base, len);
+        let startIndex = (len === startLen && resumeState) ? resumeState.index : 0;
+        
+        for (let i = startIndex; i < totalForLen; i++) {
+            let temp = i;
+            let word = '';
+            for (let j = 0; j < len; j++) {
+                word = charset[temp % base] + word;
+                temp = Math.floor(temp / base);
             }
-            if (i < 0) break;
+            yield { word, length: len, indexInLength: i };
         }
     }
 }
 
-// Calculates total combinations for brute-force to aid progress tracking.
+
+function* ruleBasedGenerator(word: string) {
+    if (!word) return;
+    yield word; // Original word
+    yield word.charAt(0).toUpperCase() + word.slice(1); // Capitalize
+    
+    const currentYear = new Date().getFullYear();
+    for (let year = currentYear - 3; year <= currentYear; year++) {
+        yield `${word}${year}`; // Append recent years
+    }
+    
+    // Leetspeak
+    yield word.replace(/a/g, '@').replace(/o/g, '0').replace(/e/g, '3').replace(/i/g, '1').replace(/s/g, '$');
+}
+
+function* maskGenerator(mask: string, startIndex = 0) {
+    const mapping = {
+        '?l': 'abcdefghijklmnopqrstuvwxyz',
+        '?u': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '?d': '0123456789',
+        '?s': '!@#$%^&*()_+~`|}{[]:;?><,./-=',
+        '?a': 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+~`|}{[]:;?><,./-='
+    };
+    const parts = mask.match(/\?l|\?u|\?d|\?s|\?a/g);
+    if (!parts) {
+        if (mask && startIndex === 0) yield { word: mask, index: 0 };
+        return;
+    }
+    const charsets = parts.map(p => mapping[p as keyof typeof mapping]);
+    const total = charsets.reduce((acc, cs) => acc * cs.length, 1);
+    if (total === 0) return;
+
+    for (let i = startIndex; i < total; i++) {
+        let temp = i;
+        let word = '';
+        for (let j = 0; j < charsets.length; j++) {
+            word += charsets[j][temp % charsets[j].length];
+            temp = Math.floor(temp / charsets[j].length);
+        }
+        yield { word, index: i };
+    }
+}
+
+
+// TOTAL CALCULATION HELPERS
 const calculateTotalCombinations = (charset: string, maxLength: number): number => {
     const n = charset.length;
     if (n === 0) return 0;
     if (n === 1) return maxLength;
-    // Sum of a geometric series: n * (n^maxLength - 1) / (n - 1)
-    // Use BigInt for intermediate calcs to prevent overflow for large numbers.
     try {
         const nBig = BigInt(n);
-        const total = nBig * (nBig ** BigInt(maxLength) - 1n) / (nBig - 1n);
-        return Number(total); // Convert back. May be Infinity if too large.
+        let total = 0n;
+        for (let i = 1; i <= maxLength; i++) {
+            total += nBig ** BigInt(i);
+        }
+        return Number(total);
     } catch (e) {
         return Infinity;
     }
 };
 
+const calculateMaskCombinations = (mask: string): number => {
+     const mapping = { '?l': 26, '?u': 26, '?d': 10, '?s': 32, '?a': 94 };
+     const parts = mask.match(/\?l|\?u|\?d|\?s|\?a/g);
+     if (!parts) return mask ? 1 : 0;
+     return parts.reduce((acc, p) => acc * (mapping[p as keyof typeof mapping] || 1), 1);
+};
+
 
 const HashCracker: React.FC = () => {
-    const [attackMode, setAttackMode] = useState<'dictionary' | 'bruteforce'>('dictionary');
+    const [attackMode, setAttackMode] = useState<AttackMode>('dictionary');
     const [targetHash, setTargetHash] = useState<string>('');
     const [wordlist, setWordlist] = useState<string>('');
+    const [mask, setMask] = useState<string>('?l?l?l?l?l?l');
     const [algorithm, setAlgorithm] = useState<HashAlgorithm>('SHA-256');
     const [isCracking, setIsCracking] = useState<boolean>(false);
     const [statusMessage, setStatusMessage] = useState<string>('');
     const [foundPassword, setFoundPassword] = useState<string>('');
     const [error, setError] = useState<string>('');
     const [progress, setProgress] = useState<number>(0);
+    const [eta, setEta] = useState<string>('');
+    const [hashesPerSecond, setHashesPerSecond] = useState<number>(0);
     const [bruteForceOpts, setBruteForceOpts] = useState({
         useLower: true,
         useUpper: false,
@@ -198,8 +261,31 @@ const HashCracker: React.FC = () => {
         useSymbols: false,
         maxLength: 4,
     });
-    
+    const [aiHints, setAiHints] = useState<string>('');
+    const [aiWordlistSize, setAiWordlistSize] = useState<number>(200);
+
+    const [passwordToVerify, setPasswordToVerify] = useState<string>('');
+    const [verificationResult, setVerificationResult] = useState<'match' | 'no_match' | 'error' | null>(null);
+    const [verificationSalt, setVerificationSalt] = useState<string>('');
+    const [verificationIterations, setVerificationIterations] = useState<number>(260000);
+
+    const [analysisInput, setAnalysisInput] = useState('password\n123456\nadmin\nqwerty\n123456789\npassword123\nfootball\niloveyou\ndragon\n111111');
+    const [chartData, setChartData] = useState<Array<{ name: string; 'Unique Hashes': number }>>([]);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [savedStateExists, setSavedStateExists] = useState(false);
+
     const crackingRef = useRef(false);
+    const crackingStartTime = useRef<number>(0);
+    const progressRef = useRef<any>({});
+    
+    useEffect(() => {
+        try {
+            const savedState = localStorage.getItem(STORAGE_KEY);
+            setSavedStateExists(!!savedState);
+        } catch (e) {
+            console.error("Could not check for saved state in localStorage.", e);
+        }
+    }, []);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -216,13 +302,88 @@ const HashCracker: React.FC = () => {
         }
     };
     
+    const saveState = () => {
+        const state = {
+            attackMode, targetHash, algorithm, wordlist, mask, bruteForceOpts,
+            progress: progressRef.current,
+        };
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            setSavedStateExists(true);
+        } catch (e) {
+            console.error("Failed to save state:", e);
+        }
+    };
+
+    const clearSavedState = () => {
+        try {
+            localStorage.removeItem(STORAGE_KEY);
+            setSavedStateExists(false);
+            setStatusMessage('Cleared saved attack state.');
+        } catch (e) {
+            console.error("Failed to clear state:", e);
+        }
+    };
+
     const stopCracking = () => {
         crackingRef.current = false;
         setIsCracking(false);
-        setStatusMessage('Cracking stopped by user.');
+        setStatusMessage('Cracking stopped by user. Saving state...');
+        saveState();
+    };
+    
+    const generateAiWordlist = async (): Promise<string[]> => {
+        if (!aiHints) {
+            throw new Error('Please provide some hints for the AI to generate a wordlist.');
+        }
+        setStatusMessage('Generating smart wordlist with AI...');
+        setProgress(0);
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const prompt = `You are a password security expert creating a highly targeted and diverse wordlist. Generate a list of ${aiWordlistSize} potential passwords based on the following hints.
+
+**HINTS:**
+"${aiHints}"
+
+**GENERATION STRATEGIES (USE A MIX OF THESE):**
+1.  **Core Information Mutation:** Combine the hints in various ways (e.g., name+year, pet+hobby).
+2.  **Common Patterns:** Append/prepend common numbers (1, 123, 12345), recent years, and symbols (!, @, #, $, *).
+3.  **Leet Speak (L33t):** Make substitutions like 'e'->'3', 'a'->'@', 'o'->'0', 's'->'5', 'i'->'1', 't'->'7'.
+4.  **Common Misspellings:** Intentionally misspell names or words from the hints.
+5.  **Keyboard Patterns:** Integrate simple keyboard sequences like 'qwerty' or '12345' into passwords.
+6.  **Contextual Content:** If hints mention interests (e.g., movies, books, games), incorporate related character names, locations, or famous quotes (can be short and without spaces).
+
+**OUTPUT FORMAT:**
+- Return ONLY the list of passwords.
+- Each password must be on a new line.
+- Do not include any explanations, titles, or markdown formatting.`;
+            
+            const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: prompt,
+            });
+
+            const text = response.text;
+            if (!text) {
+                throw new Error('AI returned an empty response.');
+            }
+
+            const words = text.split(/\r?\n/).filter(w => w.trim() !== '');
+            setStatusMessage(`AI generated ${words.length} passwords. Starting attack...`);
+            return words;
+
+        } catch (e: any) {
+             console.error("AI wordlist generation failed:", e);
+             if (e.message?.includes('API key')) {
+                throw new Error('AI wordlist generation failed. Please ensure your API key is correctly configured and valid.');
+            }
+            throw new Error('Failed to generate wordlist with AI. The service might be unavailable or the request was blocked.');
+        }
     };
 
-    const startCracking = async () => {
+
+    const startCracking = async (resumeState: any = null) => {
         if (!targetHash) {
             setError('Target hash cannot be empty.');
             return;
@@ -231,15 +392,24 @@ const HashCracker: React.FC = () => {
         setError('');
         setFoundPassword('');
         setIsCracking(true);
-        setStatusMessage('Starting...');
-        setProgress(0);
+        setStatusMessage(resumeState ? 'Resuming attack...' : 'Starting...');
+        setProgress(resumeState?.progress?.checkedCount ? (resumeState.progress.checkedCount / resumeState.progress.total) * 100 : 0);
+        setEta('');
+        setHashesPerSecond(0);
         crackingRef.current = true;
+        crackingStartTime.current = performance.now();
+        progressRef.current = resumeState?.progress || {};
         
         try {
-            if (attackMode === 'dictionary') {
-                await startDictionaryAttack();
-            } else {
-                await startBruteForceAttack();
+            if (attackMode === 'dictionary' || attackMode === 'ai') {
+                const words = attackMode === 'ai' ? await generateAiWordlist() : wordlist.split(/\r?\n/).filter(w => w);
+                if (crackingRef.current) await startDictionaryAttack(words, resumeState);
+            } else if (attackMode === 'bruteforce') {
+                await startBruteForceAttack(resumeState);
+            } else if (attackMode === 'rulebased') {
+                await startRuleBasedAttack(wordlist.split(/\r?\n/).filter(w => w));
+            } else if (attackMode === 'mask') {
+                await startMaskAttack(resumeState);
             }
         } catch (e: any) {
             setError(e.message || 'An unexpected error occurred during cracking.');
@@ -248,73 +418,67 @@ const HashCracker: React.FC = () => {
         }
     };
 
-    const startDictionaryAttack = async () => {
-        if (!wordlist) {
-            throw new Error('Wordlist cannot be empty for a dictionary attack.');
-        }
-        const words = wordlist.split(/\r?\n/).filter(w => w);
-        const totalWords = words.length;
-        if (totalWords === 0) {
-             throw new Error('Wordlist is empty or invalid.');
-        }
-        const normalizedTargetHash = targetHash.toLowerCase().trim();
-        const CHUNK_SIZE = 1000;
-        
-        for (let i = 0; i < totalWords; i += CHUNK_SIZE) {
-            if (!crackingRef.current) break;
-            
-            const chunk = words.slice(i, i + CHUNK_SIZE);
-            const promises = chunk.map(word => hashWord(word, algorithm));
-            const hashes = await Promise.all(promises);
-
-            for (let j = 0; j < hashes.length; j++) {
-                if (hashes[j] === normalizedTargetHash) {
-                    setFoundPassword(chunk[j]);
-                    setStatusMessage(`Password found after checking ${i + j + 1} words!`);
-                    setProgress(100);
-                    setIsCracking(false);
-                    crackingRef.current = false;
-                    return;
-                }
+    const handleResume = () => {
+        try {
+            const savedStateJSON = localStorage.getItem(STORAGE_KEY);
+            if (!savedStateJSON) {
+                setError("No saved state found.");
+                return;
             }
+            const savedState = JSON.parse(savedStateJSON);
             
-            const wordsChecked = Math.min(i + CHUNK_SIZE, totalWords);
-            setProgress((wordsChecked / totalWords) * 100);
-            setStatusMessage(`Checked ${wordsChecked} / ${totalWords} words...`);
-            await new Promise(resolve => setTimeout(resolve, 0)); // Yield to main thread
+            // Restore UI state
+            setAttackMode(savedState.attackMode);
+            setTargetHash(savedState.targetHash);
+            setAlgorithm(savedState.algorithm);
+            if (savedState.wordlist) setWordlist(savedState.wordlist);
+            if (savedState.mask) setMask(savedState.mask);
+            if (savedState.bruteForceOpts) setBruteForceOpts(savedState.bruteForceOpts);
+
+            // Start cracking with the resume state
+            startCracking(savedState);
+
+        } catch (e) {
+            setError("Failed to load or parse saved state.");
+            console.error(e);
         }
+    };
+    
+    const updateProgress = (checked: number, total: number) => {
+        const elapsedMs = performance.now() - crackingStartTime.current;
+        const hps = elapsedMs > 0 ? (checked / elapsedMs) * 1000 : 0;
+        setHashesPerSecond(hps);
         
-        if (crackingRef.current) {
-            setStatusMessage(`Finished checking ${totalWords} words. Password not found.`);
-            setProgress(100);
+        if (isFinite(total) && total > 0) {
+            setProgress((checked / total) * 100);
+            if (hps > 0) {
+                const remaining = total - checked;
+                const remainingSeconds = remaining / hps;
+                setEta(formatSeconds(remainingSeconds));
+            }
+            setStatusMessage(`Checked ${checked.toLocaleString()} / ${total.toLocaleString()}...`);
+        } else {
+            // For attacks with unknown total (like rule-based)
+            setProgress(0); // Or base progress on the source wordlist
+            setEta('N/A');
+            setStatusMessage(`Checked ${checked.toLocaleString()} combinations...`);
         }
-        setIsCracking(false);
-        crackingRef.current = false;
     };
 
-    const startBruteForceAttack = async () => {
-        let charset = '';
-        if (bruteForceOpts.useLower) charset += 'abcdefghijklmnopqrstuvwxyz';
-        if (bruteForceOpts.useUpper) charset += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        if (bruteForceOpts.useDigits) charset += '0123456789';
-        if (bruteForceOpts.useSymbols) charset += '!@#$%^&*()_+~`|}{[]:;?><,./-=';
-
-        if (!charset) {
-             throw new Error('Please select at least one character set for brute-force attack.');
-        }
-
+    // FIX: Explicitly type the generator parameter to allow for yielded items that are either strings or objects with a 'word' property.
+    const runAttackLoop = async (generator: Generator<{ word: string; [key: string]: any; }>, total: number, initialChecked = 0) => {
         const normalizedTargetHash = targetHash.toLowerCase().trim();
-        const totalCombinations = calculateTotalCombinations(charset, bruteForceOpts.maxLength);
-        
-        const generator = combinationGenerator(charset, bruteForceOpts.maxLength);
-        let checkedCount = 0;
         const CHUNK_SIZE = 5000;
+        let checkedCount = initialChecked;
         let chunk: string[] = [];
+        let chunkProgress: any[] = [];
+        
+        progressRef.current.total = total;
 
         for (const item of generator) {
             if (!crackingRef.current) break;
-            
             chunk.push(item.word);
+            chunkProgress.push(item);
 
             if (chunk.length >= CHUNK_SIZE) {
                 const promises = chunk.map(w => hashWord(w, algorithm));
@@ -324,50 +488,187 @@ const HashCracker: React.FC = () => {
                     if (hashes[j] === normalizedTargetHash) {
                         setFoundPassword(chunk[j]);
                         setStatusMessage(`Password found after checking ${(checkedCount + j + 1).toLocaleString()} combinations!`);
-                        setProgress(100);
-                        setIsCracking(false);
-                        crackingRef.current = false;
-                        return;
+                        setProgress(100); setIsCracking(false); crackingRef.current = false; return;
                     }
                 }
                 checkedCount += chunk.length;
+                progressRef.current = { ...chunkProgress[chunkProgress.length - 1], checkedCount, total };
                 chunk = [];
-                if (isFinite(totalCombinations) && totalCombinations > 0) {
-                     setProgress((checkedCount / totalCombinations) * 100);
-                }
-                setStatusMessage(`Checked ${checkedCount.toLocaleString()} combinations... Trying length ${item.length}.`);
-                await new Promise(resolve => setTimeout(resolve, 1)); // Yield to main thread
+                chunkProgress = [];
+                updateProgress(checkedCount, total);
+                await new Promise(resolve => setTimeout(resolve, 1)); // Yield
             }
         }
-
+        
+        // Process remaining items in the last chunk
         if (crackingRef.current && chunk.length > 0) {
             const promises = chunk.map(w => hashWord(w, algorithm));
             const hashes = await Promise.all(promises);
-             for (let j = 0; j < hashes.length; j++) {
+            for (let j = 0; j < hashes.length; j++) {
                 if (hashes[j] === normalizedTargetHash) {
                     setFoundPassword(chunk[j]);
                     setStatusMessage(`Password found after checking ${(checkedCount + j + 1).toLocaleString()} combinations!`);
-                    setProgress(100);
-                    setIsCracking(false);
-                    crackingRef.current = false;
-                    return;
+                    setProgress(100); setIsCracking(false); crackingRef.current = false; return;
                 }
             }
             checkedCount += chunk.length;
         }
-        
+
         if (crackingRef.current) {
             setStatusMessage(`Finished checking ${checkedCount.toLocaleString()} combinations. Password not found.`);
             setProgress(100);
+            clearSavedState(); // Attack completed, clear state
         }
         setIsCracking(false);
         crackingRef.current = false;
     };
+
+
+    const startDictionaryAttack = (words: string[], resumeState: any) => {
+        if (!words || words.length === 0) throw new Error('Wordlist is empty.');
+        const startIndex = resumeState?.progress?.index || 0;
+        const generator = (function*() {
+            for (let i = startIndex; i < words.length; i++) {
+                yield { word: words[i], index: i };
+            }
+        })();
+        return runAttackLoop(generator, words.length, startIndex);
+    };
+
+    const startBruteForceAttack = (resumeState: any) => {
+        let charset = '';
+        if (bruteForceOpts.useLower) charset += 'abcdefghijklmnopqrstuvwxyz';
+        if (bruteForceOpts.useUpper) charset += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        if (bruteForceOpts.useDigits) charset += '0123456789';
+        if (bruteForceOpts.useSymbols) charset += '!@#$%^&*()_+~`|}{[]:;?><,./-=';
+        if (!charset) throw new Error('Please select at least one character set.');
+        
+        const total = calculateTotalCombinations(charset, bruteForceOpts.maxLength);
+        const resumePoint = resumeState?.progress?.length ? { length: resumeState.progress.length, index: resumeState.progress.indexInLength + 1 } : undefined;
+        
+        let initialChecked = 0;
+        if (resumePoint) {
+            for (let i = 1; i < resumePoint.length; i++) {
+                initialChecked += Math.pow(charset.length, i);
+            }
+            initialChecked += resumePoint.index;
+        }
+
+        return runAttackLoop(combinationGenerator(charset, bruteForceOpts.maxLength, resumePoint), total, initialChecked);
+    };
     
-    const AttackModeButton = ({ label, value }: { label: string, value: 'dictionary' | 'bruteforce' }) => (
+    const startRuleBasedAttack = (words: string[]) => {
+        if (!words || words.length === 0) throw new Error('Wordlist is empty for rule-based attack.');
+        const generator = (function*() {
+            for (const word of words) {
+                for (const ruleWord of ruleBasedGenerator(word)) {
+                     yield { word: ruleWord };
+                }
+            }
+        })();
+        return runAttackLoop(generator, Infinity);
+    };
+    
+    const startMaskAttack = (resumeState: any) => {
+        if (!mask) throw new Error('Mask cannot be empty.');
+        const total = calculateMaskCombinations(mask);
+        const startIndex = resumeState?.progress?.index ? resumeState.progress.index + 1 : 0;
+        return runAttackLoop(maskGenerator(mask, startIndex), total, startIndex);
+    };
+
+    const handleVerify = async () => {
+        if (!passwordToVerify || !targetHash) {
+            setVerificationResult('error');
+            setError("Password and target hash fields cannot be empty for verification.");
+            return;
+        }
+        setError('');
+        let generatedHash = '';
+
+        // If salt is provided for a PBKDF2-compatible algorithm, use the advanced hashing.
+        if (verificationSalt.trim() && ['SHA-256', 'SHA-512'].includes(algorithm)) {
+            try {
+                // 1. Convert hex salt to ArrayBuffer
+                const saltBytes = new Uint8Array(verificationSalt.trim().match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+                
+                // 2. Encode password to ArrayBuffer
+                const encoder = new TextEncoder();
+                const passwordBuffer = encoder.encode(passwordToVerify);
+
+                // 3. Import key material for PBKDF2
+                const keyMaterial = await window.crypto.subtle.importKey(
+                    'raw',
+                    passwordBuffer,
+                    { name: 'PBKDF2' },
+                    false,
+                    ['deriveBits']
+                );
+                
+                // 4. Derive the key bits
+                const keyLength = algorithm === 'SHA-256' ? 256 : 512;
+                const derivedBits = await window.crypto.subtle.deriveBits(
+                    {
+                        name: 'PBKDF2',
+                        salt: saltBytes,
+                        iterations: verificationIterations,
+                        hash: algorithm
+                    },
+                    keyMaterial,
+                    keyLength
+                );
+                
+                generatedHash = bufferToHex(derivedBits);
+
+            } catch (e: any) {
+                setError(`PBKDF2 hashing failed: ${e.message}. Ensure salt is valid hex.`);
+                setVerificationResult('error');
+                return;
+            }
+        } else {
+            // Use simple hashing for MD5, SHA-1, or if no salt is provided
+            generatedHash = await hashWord(passwordToVerify, algorithm);
+        }
+
+        if (generatedHash.toLowerCase() === targetHash.toLowerCase().trim()) {
+            setVerificationResult('match');
+        } else {
+            setVerificationResult('no_match');
+        }
+    };
+    
+    const analyzeHashes = async () => {
+        const words = analysisInput.split(/\r?\n/).filter(w => w.trim());
+        if (words.length === 0) {
+            setChartData([]);
+            return;
+        };
+        setIsAnalyzing(true);
+        
+        const algorithms: HashAlgorithm[] = ['MD5', 'SHA-1', 'SHA-256', 'SHA-512'];
+        const uniqueHashes: Record<HashAlgorithm, Set<string>> = {
+            'MD5': new Set(), 'SHA-1': new Set(), 'SHA-256': new Set(), 'SHA-512': new Set()
+        };
+    
+        for (const word of words) {
+            const hashPromises = algorithms.map(alg => hashWord(word, alg));
+            const hashes = await Promise.all(hashPromises);
+            hashes.forEach((hash, index) => {
+                uniqueHashes[algorithms[index]].add(hash);
+            });
+        }
+    
+        const data = algorithms.map(alg => ({
+            name: alg,
+            'Unique Hashes': uniqueHashes[alg].size
+        }));
+        setChartData(data);
+        setIsAnalyzing(false);
+    };
+
+    const AttackModeButton = ({ label, value }: { label: string, value: AttackMode }) => (
         <button
             onClick={() => setAttackMode(value)}
-            className={`flex-1 text-center p-3 rounded-lg transition-colors ${attackMode === value ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+            className={`flex-1 text-center p-3 rounded-lg transition-colors text-sm sm:text-base ${attackMode === value ? 'bg-blue-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
         >
             {label}
         </button>
@@ -383,12 +684,25 @@ const HashCracker: React.FC = () => {
 
     return (
         <div className="bg-gray-800 rounded-xl shadow-lg p-6 animate-fade-in">
-            <h2 className="text-2xl font-bold text-white mb-2">Hash Cracker</h2>
-            <p className="text-gray-400 mb-6 text-sm">Demonstrates dictionary and brute-force attacks against hashes.</p>
+            <h2 className="text-2xl font-bold text-white mb-2">Hash Cracker & Verifier</h2>
+            <p className="text-gray-400 mb-6 text-sm">Demonstrates attacks against common hash algorithms and verifies hashes.</p>
             
             <div className="p-4 mb-6 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
                 <strong>For Educational Use Only:</strong> This tool is for learning purposes to understand password vulnerability. Do not use it for malicious activities.
             </div>
+             {savedStateExists && (
+                <div className="p-3 mb-6 bg-yellow-900/50 border border-yellow-700 rounded-lg text-yellow-200 text-sm flex justify-between items-center">
+                    <span>An incomplete attack session was found.</span>
+                    <div>
+                        <button onClick={handleResume} className="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-1 px-3 rounded-lg transition-colors text-xs mr-2">
+                            Resume Attack
+                        </button>
+                        <button onClick={clearSavedState} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-1 px-3 rounded-lg transition-colors text-xs">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -406,18 +720,83 @@ const HashCracker: React.FC = () => {
                         </select>
                     </div>
                 </div>
-                {algorithm === 'MD5' && (
+                {algorithm === 'MD5' && attackMode !== 'verification' && (
                     <div className="p-3 bg-yellow-900/50 border border-yellow-700 rounded-lg text-yellow-200 text-xs">
                         <strong>Warning:</strong> MD5 is cryptographically broken and highly vulnerable to collisions. It should not be used for any security-related purpose in modern applications.
                     </div>
                 )}
 
-                <div className="flex bg-gray-900 rounded-lg p-1 space-x-1">
-                    <AttackModeButton label="Dictionary Attack" value="dictionary" />
-                    <AttackModeButton label="Brute-Force Attack" value="bruteforce" />
+                <div className="flex bg-gray-900 rounded-lg p-1 space-x-1 flex-wrap">
+                    <AttackModeButton label="Dictionary" value="dictionary" />
+                    <AttackModeButton label="Rule-Based" value="rulebased" />
+                    <AttackModeButton label="AI-Powered" value="ai" />
+                    <AttackModeButton label="Brute-Force" value="bruteforce" />
+                    <AttackModeButton label="Mask" value="mask" />
+                    <AttackModeButton label="Verification" value="verification" />
                 </div>
 
-                {attackMode === 'dictionary' ? (
+                {attackMode === 'verification' && (
+                    <div className="bg-gray-900/50 p-4 rounded-lg space-y-4">
+                         <div>
+                            <label htmlFor="password-to-verify" className="block text-sm font-medium text-gray-300 mb-2">Password to Verify</label>
+                            <input
+                                id="password-to-verify"
+                                type="password"
+                                placeholder="Enter password to check against the hash"
+                                value={passwordToVerify}
+                                onChange={e => setPasswordToVerify(e.target.value)}
+                                className="w-full bg-gray-700 border border-gray-600 rounded-md p-2"
+                            />
+                        </div>
+
+                        {['SHA-256', 'SHA-512'].includes(algorithm) && (
+                            <>
+                                <div className="p-2 bg-blue-900/50 border border-blue-700 rounded-lg text-blue-200 text-xs">
+                                    For modern hashes, you can provide a salt and iterations to verify a PBKDF2-derived key. Leave salt blank for a simple, unsalted hash check.
+                                </div>
+                                <div className="flex flex-col sm:flex-row gap-4">
+                                    <div className="flex-1">
+                                        <label htmlFor="verification-salt" className="block text-sm font-medium text-gray-300 mb-2">Salt (Hex)</label>
+                                        <input
+                                            id="verification-salt"
+                                            placeholder="e.g., 2d9a..."
+                                            value={verificationSalt}
+                                            onChange={e => setVerificationSalt(e.target.value)}
+                                            className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 font-mono text-sm"
+                                        />
+                                    </div>
+                                    <div className="sm:w-1/3">
+                                        <label htmlFor="verification-iterations" className="block text-sm font-medium text-gray-300 mb-2">Iterations</label>
+                                        <input
+                                            id="verification-iterations"
+                                            type="number"
+                                            value={verificationIterations}
+                                            onChange={e => setVerificationIterations(parseInt(e.target.value, 10) || 1)}
+                                            className="w-full bg-gray-700 border border-gray-600 rounded-md p-2"
+                                        />
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                        
+                        <button onClick={handleVerify} className="w-full font-bold py-3 px-4 rounded-lg transition-colors text-lg bg-indigo-600 hover:bg-indigo-700 text-white">
+                            Verify Password
+                        </button>
+                        {verificationResult && (
+                            <div className={`p-4 rounded-lg text-center font-bold text-xl ${
+                                verificationResult === 'match' ? 'bg-green-900/50 text-green-300' :
+                                verificationResult === 'no_match' ? 'bg-red-900/50 text-red-300' :
+                                'bg-yellow-900/50 text-yellow-300'
+                            }`}>
+                                {verificationResult === 'match' && '✅ HASH MATCH'}
+                                {verificationResult === 'no_match' && '❌ HASH DOES NOT MATCH'}
+                                {verificationResult === 'error' && `⚠️ ${error || 'Please fill all fields'}`}
+                            </div>
+                        )}
+                    </div>
+                )}
+                
+                {['dictionary', 'rulebased'].includes(attackMode) && (
                     <div className="bg-gray-900/50 p-4 rounded-lg space-y-2">
                         <label htmlFor="wordlist" className="block text-sm font-medium text-gray-300">Wordlist (one word per line)</label>
                         <textarea id="wordlist" placeholder={"Paste a list of passwords here, or upload a file.\n\npassword\n123456\n..."} value={wordlist} onChange={(e) => setWordlist(e.target.value)} rows={8} className="w-full bg-gray-900 border border-gray-600 rounded-md p-3 text-white font-mono text-sm focus:ring-blue-500 focus:border-blue-500 resize-y"/>
@@ -426,7 +805,40 @@ const HashCracker: React.FC = () => {
                             <input id="file-upload" type="file" className="hidden" onChange={handleFileChange} accept=".txt,.dic" />
                         </label>
                     </div>
-                ) : (
+                )}
+
+                {attackMode === 'ai' && (
+                    <div className="bg-gray-900/50 p-4 rounded-lg space-y-4">
+                        <label htmlFor="ai-hints" className="block text-sm font-medium text-gray-300">
+                            AI Hints (Describe the password's owner)
+                        </label>
+                        <textarea
+                            id="ai-hints"
+                            placeholder="e.g., A developer who loves their dog 'Rex', enjoys Star Wars, and was born in 1995."
+                            value={aiHints}
+                            onChange={(e) => setAiHints(e.target.value)}
+                            rows={4}
+                            className="w-full bg-gray-900 border border-gray-600 rounded-md p-3 text-white text-sm focus:ring-blue-500 focus:border-blue-500 resize-y"
+                        />
+                        <div>
+                            <label htmlFor="ai-wordlist-size" className="block text-sm font-medium text-gray-300 mb-2">
+                                Wordlist Size: {aiWordlistSize}
+                            </label>
+                            <input
+                                type="range"
+                                id="ai-wordlist-size"
+                                min="50"
+                                max="1000"
+                                step="50"
+                                value={aiWordlistSize}
+                                onChange={(e) => setAiWordlistSize(parseInt(e.target.value, 10))}
+                                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                            />
+                        </div>
+                    </div>
+                )}
+                
+                {attackMode === 'bruteforce' && (
                     <div className="bg-gray-900/50 p-4 rounded-lg space-y-4">
                         <p className="text-sm text-gray-300">Select character sets and max length for brute-force:</p>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -436,22 +848,50 @@ const HashCracker: React.FC = () => {
                            <BruteForceOptionCheckbox label="Symbols" checked={bruteForceOpts.useSymbols} onChange={e => setBruteForceOpts(o => ({...o, useSymbols: e.target.checked}))} />
                         </div>
                         <div>
-                            <label htmlFor="max-length" className="block text-sm font-medium text-gray-300 mb-2">Max Length (Warning: &gt;8 can be very slow)</label>
-                            <input type="number" id="max-length" min="1" max="10" value={bruteForceOpts.maxLength} onChange={e => setBruteForceOpts(o => ({...o, maxLength: parseInt(e.target.value, 10) || 1}))} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2" />
+                            <label htmlFor="max-length" className="block text-sm font-medium text-gray-300 mb-2">Max Length</label>
+                            <input type="number" id="max-length" min="1" max="14" value={bruteForceOpts.maxLength} onChange={e => setBruteForceOpts(o => ({...o, maxLength: Math.min(14, parseInt(e.target.value, 10) || 1)}))} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2" />
+                            {bruteForceOpts.maxLength > 10 && (
+                                <div className="mt-2 p-2 bg-yellow-900/50 border border-yellow-700 rounded-lg text-yellow-200 text-xs">
+                                    <strong>Warning:</strong> Lengths greater than 10 can take an extremely long time (hours, days, or longer) to complete, depending on your character set and computer's performance.
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
                 
-                 <button onClick={isCracking ? stopCracking : startCracking} className={`w-full font-bold py-3 px-4 rounded-lg transition-colors text-lg flex items-center justify-center ${isCracking ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                {attackMode === 'mask' && (
+                     <div className="bg-gray-900/50 p-4 rounded-lg space-y-4">
+                        <div>
+                            <label htmlFor="mask-input" className="block text-sm font-medium text-gray-300 mb-2">Mask Pattern</label>
+                            <input type="text" id="mask-input" value={mask} onChange={e => setMask(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 font-mono" />
+                        </div>
+                        <div className="text-xs text-gray-400 p-2 bg-gray-900 rounded-md">
+                            <p className="font-bold">Placeholders:</p>
+                            <p>?l = lowercase, ?u = uppercase, ?d = digits, ?s = symbols, ?a = all</p>
+                            <p>Example: <span className="font-mono">?u?l?l?l?d?d?s</span> for a password like 'Pass12!'</p>
+                        </div>
+                    </div>
+                )}
+                
+                {attackMode !== 'verification' && (
+                 <button onClick={isCracking ? stopCracking : () => startCracking()} className={`w-full font-bold py-3 px-4 rounded-lg transition-colors text-lg flex items-center justify-center ${isCracking ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
                     {isCracking ? 'Stop Cracking' : 'Start Cracking'}
                 </button>
+                )}
 
                 {isCracking && (
-                    <div className="w-full bg-gray-700 rounded-full h-3 mt-4">
-                        <div
-                            className="bg-blue-500 h-3 rounded-full transition-all duration-100"
-                            style={{ width: `${progress}%` }}
-                        ></div>
+                    <div className="mt-4 space-y-2">
+                        <div className="w-full bg-gray-700 rounded-full h-3">
+                            <div
+                                className="bg-blue-500 h-3 rounded-full transition-all duration-100"
+                                style={{ width: `${progress}%` }}
+                            ></div>
+                        </div>
+                        <div className="text-xs text-center text-gray-400 flex justify-between">
+                            <span>{Math.round(hashesPerSecond).toLocaleString()} H/s</span>
+                            <span>{progress.toFixed(2)}%</span>
+                            <span>ETA: {eta}</span>
+                        </div>
                     </div>
                 )}
 
@@ -472,6 +912,47 @@ const HashCracker: React.FC = () => {
                     </div>
                 )}
             </div>
+            
+            <div className="mt-8 pt-6 border-t border-gray-700">
+                <h3 className="text-xl font-bold text-white mb-4">Hash Collision Demonstrator</h3>
+                <p className="text-gray-400 mb-4 text-sm">
+                    Enter a list of passwords to see how many unique hashes each algorithm produces. Weaker algorithms like MD5 are more likely to produce "collisions" (the same hash for different inputs), resulting in fewer unique hashes from the same list.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label htmlFor="analysis-input" className="block text-sm font-medium text-gray-300 mb-2">Password List</label>
+                        <textarea
+                            id="analysis-input"
+                            value={analysisInput}
+                            onChange={e => setAnalysisInput(e.target.value)}
+                            rows={10}
+                            className="w-full bg-gray-900 border border-gray-600 rounded-md p-3 text-white font-mono text-sm focus:ring-blue-500 focus:border-blue-500 resize-y"
+                        />
+                        <button onClick={analyzeHashes} disabled={isAnalyzing} className="mt-2 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed">
+                            {isAnalyzing ? 'Analyzing...' : 'Analyze & Visualize'}
+                        </button>
+                    </div>
+                    <div className="bg-gray-900/50 p-2 rounded-lg min-h-[300px]">
+                        {chartData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height={300}>
+                                <BarChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#4A5568" />
+                                    <XAxis dataKey="name" stroke="#A0AEC0" fontSize={12} />
+                                    <YAxis allowDecimals={false} stroke="#A0AEC0" fontSize={12} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568' }} cursor={{fill: 'rgba(128,128,128,0.1)'}}/>
+                                    <Legend wrapperStyle={{ fontSize: '14px', paddingTop: '10px' }}/>
+                                    <Bar dataKey="Unique Hashes" fill="#4299E1" />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="flex items-center justify-center h-full text-gray-500">
+                                <p>Analysis results will be displayed here.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
         </div>
     );
 };

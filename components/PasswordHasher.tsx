@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { CopyIcon, CheckIcon } from './icons';
 
 // Helper function to convert ArrayBuffer to hex string
@@ -9,16 +9,34 @@ const bufferToHex = (buffer: ArrayBuffer): string => {
 };
 
 type HashAlgorithm = 'SHA-256' | 'SHA-512';
+const STORAGE_KEY = 'cyber-security-toolkit-hasher';
+
 
 const PasswordHasher: React.FC = () => {
     const [password, setPassword] = useState<string>('');
     const [algorithm, setAlgorithm] = useState<HashAlgorithm>('SHA-256');
+    const [iterations, setIterations] = useState<number>(260000);
     const [salt, setSalt] = useState<string>('');
     const [hashedKey, setHashedKey] = useState<string>('');
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string>('');
     const [saltCopied, setSaltCopied] = useState<boolean>(false);
     const [hashCopied, setHashCopied] = useState<boolean>(false);
+
+    useEffect(() => {
+        try {
+            const storedData = localStorage.getItem(STORAGE_KEY);
+            if (storedData) {
+                const { salt: storedSalt, hashedKey: storedHashedKey, algorithm: storedAlgorithm, iterations: storedIterations } = JSON.parse(storedData);
+                if (storedSalt) setSalt(storedSalt);
+                if (storedHashedKey) setHashedKey(storedHashedKey);
+                if (storedAlgorithm) setAlgorithm(storedAlgorithm);
+                if (storedIterations) setIterations(storedIterations);
+            }
+        } catch (e) {
+            console.error("Failed to load or parse data from localStorage", e);
+        }
+    }, []);
 
     const handleCopy = (text: string, type: 'salt' | 'hash') => {
         if (!text) return;
@@ -32,26 +50,54 @@ const PasswordHasher: React.FC = () => {
         }
     };
 
+    const clearInputs = useCallback(() => {
+        setPassword('');
+        setAlgorithm('SHA-256');
+        setIterations(260000);
+        setSalt('');
+        setHashedKey('');
+        setError('');
+        setIsLoading(false);
+        setSaltCopied(false);
+        setHashCopied(false);
+    }, []);
+
+    const clearStoredData = useCallback(() => {
+        try {
+            localStorage.removeItem(STORAGE_KEY);
+        } catch (e) {
+            console.error("Failed to remove data from localStorage", e);
+        }
+        clearInputs();
+    }, [clearInputs]);
+
     const hashPassword = useCallback(async () => {
         if (!password) {
             setError('Password cannot be empty.');
             return;
         }
+        if (iterations <= 0 || isNaN(iterations)) {
+            setError('Iterations must be a positive number.');
+            return;
+        }
         setIsLoading(true);
         setError('');
-        setSalt('');
         setHashedKey('');
-        
-        try {
-            // 1. Generate a salt
-            const saltBytes = window.crypto.getRandomValues(new Uint8Array(16));
-            setSalt(bufferToHex(saltBytes));
 
-            // 2. Encode the password
+        // Generate a fresh salt for each hash operation
+        const saltBytes = window.crypto.getRandomValues(new Uint8Array(16));
+        const newSalt = bufferToHex(saltBytes);
+        setSalt(newSalt);
+        
+        // Use a brief timeout to allow the UI to update (e.g., show "Hashing...") before the potentially blocking crypto operation starts.
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        try {
+            // 1. Encode the password
             const encoder = new TextEncoder();
             const passwordBuffer = encoder.encode(password);
 
-            // 3. Import key for PBKDF2
+            // 2. Import key for PBKDF2
             const keyMaterial = await window.crypto.subtle.importKey(
                 'raw',
                 passwordBuffer,
@@ -60,8 +106,7 @@ const PasswordHasher: React.FC = () => {
                 ['deriveBits', 'deriveKey']
             );
             
-            // 4. Derive key using PBKDF2
-            const iterations = 260000;
+            // 3. Derive key using PBKDF2 with user-defined iterations
             const keyLength = algorithm === 'SHA-256' ? 256 : 512;
             const derivedBits = await window.crypto.subtle.deriveBits(
                 {
@@ -74,7 +119,17 @@ const PasswordHasher: React.FC = () => {
                 keyLength // key length in bits
             );
 
-            setHashedKey(bufferToHex(derivedBits));
+            const derivedKeyHex = bufferToHex(derivedBits);
+            setHashedKey(derivedKeyHex);
+
+            // Store the result in localStorage
+            try {
+                const dataToStore = JSON.stringify({ salt: newSalt, hashedKey: derivedKeyHex, algorithm, iterations });
+                localStorage.setItem(STORAGE_KEY, dataToStore);
+            } catch (e) {
+                console.error("Failed to save data to localStorage", e);
+                setError("Hashing succeeded, but failed to save data to local storage.");
+            }
 
         } catch (e) {
             console.error("Hashing failed:", e);
@@ -83,15 +138,15 @@ const PasswordHasher: React.FC = () => {
             setIsLoading(false);
         }
 
-    }, [password, algorithm]);
+    }, [password, algorithm, iterations]);
 
     const ResultDisplay = ({ label, value, isCopied, onCopy }: { label: string; value: string; isCopied: boolean; onCopy: () => void; }) => (
         <div>
             <h4 className="text-sm font-semibold text-gray-400 mb-1">{label}</h4>
             <div className="relative">
-                <p className="w-full bg-gray-900 p-3 pr-12 rounded-md font-mono text-sm text-green-400 break-all">{value || '...'}</p>
+                <p className="w-full bg-gray-900 p-3 pr-12 rounded-md font-mono text-sm text-green-400 break-all" style={{ wordBreak: 'break-all' }}>{value || '...'}</p>
                 {value && (
-                    <button onClick={onCopy} className="absolute inset-y-0 right-0 flex items-center px-4 text-gray-400 hover:text-white transition-colors">
+                    <button onClick={onCopy} aria-label={`Copy ${label}`} className="absolute inset-y-0 right-0 flex items-center px-4 text-gray-400 hover:text-white transition-colors">
                         {isCopied ? <CheckIcon className="h-5 w-5 text-green-500" /> : <CopyIcon className="h-5 w-5" />}
                     </button>
                 )}
@@ -109,11 +164,11 @@ const PasswordHasher: React.FC = () => {
             </div>
 
             <div className="space-y-6">
+                 <div>
+                    <label htmlFor="password-to-hash" className="block text-sm font-medium text-gray-300 mb-2">Password to Hash</label>
+                    <input type="password" id="password-to-hash" placeholder="Enter password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 text-white focus:ring-blue-500 focus:border-blue-500"/>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                     <div>
-                        <label htmlFor="password-to-hash" className="block text-sm font-medium text-gray-300 mb-2">Password to Hash</label>
-                        <input type="password" id="password-to-hash" placeholder="Enter password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 text-white focus:ring-blue-500 focus:border-blue-500"/>
-                    </div>
                      <div>
                         <label htmlFor="hash-algorithm" className="block text-sm font-medium text-gray-300 mb-2">Algorithm (PBKDF2)</label>
                         <select id="hash-algorithm" value={algorithm} onChange={(e) => setAlgorithm(e.target.value as HashAlgorithm)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 text-white focus:ring-blue-500 focus:border-blue-500">
@@ -121,26 +176,54 @@ const PasswordHasher: React.FC = () => {
                             <option value="SHA-512">SHA-512</option>
                         </select>
                     </div>
+                     <div>
+                        <label htmlFor="iterations" className="block text-sm font-medium text-gray-300 mb-2">Iterations</label>
+                        <input 
+                            type="number"
+                            id="iterations"
+                            min="1"
+                            step="10000"
+                            value={iterations}
+                            onChange={(e) => setIterations(parseInt(e.target.value, 10) || 1)}
+                            className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 text-white focus:ring-blue-500 focus:border-blue-500"
+                        />
+                    </div>
                 </div>
                  <div className="p-3 bg-blue-900/50 border border-blue-700 rounded-lg text-blue-200 text-xs">
                     <strong>Note:</strong> For modern applications, password hashing algorithms like <strong>Argon2</strong> or <strong>bcrypt</strong> are recommended over PBKDF2. They are not included here as they are not supported by the standard browser Web Crypto API.
                 </div>
                 
-                <button
-                    onClick={hashPassword}
-                    disabled={isLoading}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center"
-                >
-                    {isLoading ? (
-                        <>
-                            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Hashing...
-                        </>
-                    ) : 'Hash Password'}
-                </button>
+                <div className="flex flex-col sm:flex-row gap-4">
+                    <button
+                        onClick={hashPassword}
+                        disabled={isLoading}
+                        className="flex-grow bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-lg disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center"
+                    >
+                        {isLoading ? (
+                            <>
+                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Hashing...
+                            </>
+                        ) : 'Hash Password & Store'}
+                    </button>
+                     <button
+                        onClick={clearInputs}
+                        disabled={isLoading}
+                        className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Clear Inputs
+                    </button>
+                     <button
+                        onClick={clearStoredData}
+                        disabled={isLoading}
+                        className="bg-red-700 hover:bg-red-800 text-white font-bold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Clear Stored Hash
+                    </button>
+                </div>
 
                 {error && <p className="text-red-400 text-center">{error}</p>}
 
