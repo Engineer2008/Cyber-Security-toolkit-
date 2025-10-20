@@ -6,5 +6,6 @@ export enum Tool {
   PwnedChecker = 'PWNED_CHECKER',
   PasswordHasher = 'PASSWORD_HASHER',
   HashCracker = 'HASH_CRACKER',
+  HashCollisionAnalyzer = 'HASH_COLLISION_ANALYZER',
   SSLChecker = 'SSL_CHECKER',
 }

@@ -8,7 +8,8 @@ import HashCracker from './components/HashCracker';
 import SSLChecker from './components/SSLChecker';
 import EntropyAnalyzer from './components/EntropyAnalyzer';
 import PwnedChecker from './components/PwnedChecker';
-import { ShieldCheckIcon, CogIcon, KeyIcon, BeakerIcon, LockOpenIcon, CertificateIcon, CalculatorIcon, ExclamationTriangleIcon, SearchIcon } from './components/icons';
+import HashCollisionAnalyzer from './components/HashCollisionAnalyzer';
+import { ShieldCheckIcon, CogIcon, KeyIcon, BeakerIcon, LockOpenIcon, CertificateIcon, CalculatorIcon, ExclamationTriangleIcon, SearchIcon, ArrowsRightLeftIcon } from './components/icons';
 
 const toolConfig = {
     [Tool.PasswordGenerator]: {
@@ -45,6 +46,11 @@ const toolConfig = {
         name: 'Hash Cracker',
         component: HashCracker,
         icon: LockOpenIcon,
+    },
+    [Tool.HashCollisionAnalyzer]: {
+        name: 'Hash Collision Analyzer',
+        component: HashCollisionAnalyzer,
+        icon: ArrowsRightLeftIcon,
     },
     [Tool.SSLChecker]: {
         name: 'SSL/TLS Checker',
